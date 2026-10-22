@@ -1,0 +1,28 @@
+[Unit]
+Description=Meter isolated passive Codex usage collector
+After=local-fs.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/usr/bin/python3 /opt/codex-meter/current/scripts/sandbox.py collector
+Restart=on-failure
+RestartSec=10
+Nice=15
+CPUQuota=20%
+MemoryMax=256M
+LimitCORE=0
+TasksMax=32
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/codex-meter/collector /var/lib/codex-meter/published
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,29 @@
+[Unit]
+Description=Meter private usage dashboard (isolated loopback server)
+After=local-fs.target codex-meter-collector.service
+
+[Service]
+Type=simple
+User=meter-web
+Group=meter-web
+ExecStart=/usr/bin/python3 /opt/codex-meter/current/scripts/sandbox.py web
+Restart=on-failure
+RestartSec=5
+Nice=10
+CPUQuota=35%
+MemoryMax=256M
+LimitCORE=0
+TasksMax=64
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/codex-meter/web
+InaccessiblePaths=/home/ubuntu/.codex /home/ubuntu/vaults
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

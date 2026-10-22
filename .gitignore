@@ -1,0 +1,33 @@
+node_modules/
+__pycache__/
+*.pyc
+*.sqlite*
+*.env
+report.json
+auth.json
+initial-login.txt
+artifacts/
+
+# Private runtime state and review artifacts are never public source.
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite*
+*.db
+*.db-*
+*.jsonl
+*.pem
+*.key
+auth.json
+credentials*.json
+initial-login.txt
+.state/
+private/
+qa/evidence/
+docs/qa/
+docs/screenshots/
+
+# Also ignore dependency links used by isolated verification.
+node_modules
+.venv

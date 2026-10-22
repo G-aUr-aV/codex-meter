@@ -1,0 +1,6 @@
+{
+  "name": "codex-meter", "version": "1.0.0", "private": true, "type": "module",
+  "description": "An isolated, passive Codex token ledger with a private web dashboard",
+  "engines": {"node": ">=24 <25"},
+  "scripts": {"start": "node server.mjs", "test": "node --test tests/*.test.mjs", "test:collector": "python3 -m unittest discover -s tests -p 'test_*.py'"}
+}
