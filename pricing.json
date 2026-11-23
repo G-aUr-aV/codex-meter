@@ -1,7 +1,8 @@
 {
   "verified": "2026-10-20", "currency": "USD", "basis": "API-equivalent model token estimates, not subscription charges",
   "models": {
-    "gpt-6.1-sol": {"input": 2, "cached": 0.1, "write": 2.5, "output": 10, "long_threshold": 272000, "long_input": 2, "long_output": 1.5},
+    "gpt-6.2-sol": {"input": 2, "cached": 0.1, "write": 2.5, "output": 10, "long_threshold": 272000, "long_input": 2, "long_output": 1.5, "tiers": {"standard": 1, "fast": 2, "batch": 0.5, "ultrafast": 6}, "ultrafast_promo": {"multiplier": 3, "until": "2027-03-01T08:00:00Z"}},
+    "gpt-6.1-sol": {"input": 2, "cached": 0.1, "write": 2.5, "output": 10, "long_threshold": 272000, "long_input": 2, "long_output": 1.5, "tiers": {"standard": 1, "fast": 2, "flex": 0.5, "batch": 0.5, "ultrafast": 6}},
     "gpt-6-sol": {"input": 2, "cached": 0.2, "write": 2.5, "output": 10, "long_threshold": 272000, "long_input": 2, "long_output": 1.5},
     "gpt-6-astra": {"input": 10, "cached": 1, "write": 12.5, "output": 50, "long_threshold": 272000, "long_input": 2, "long_output": 1.5},
     "gpt-6-luna": {"input": 0.1, "cached": 0.01, "write": 0.125, "output": 0.5, "long_threshold": 272000, "long_input": 2, "long_output": 1.5},
@@ -9,6 +10,7 @@
     "gpt-5.6-luna": {"input": 0.2, "cached": 0.02, "write": 0.25, "output": 1.2, "long_threshold": 272000, "long_input": 2, "long_output": 1.5, "long_cached": 1}
   },
   "sources": [
+    "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
     "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
     "https://developers.openai.com/api/docs/models/gpt-6-sol",
     "https://developers.openai.com/api/docs/models/gpt-6-astra",

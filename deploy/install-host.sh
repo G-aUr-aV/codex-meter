@@ -8,7 +8,7 @@ test -x "$node"
 test -f "$repo/collector.py"
 install -d -m 0755 /opt/codex-meter /opt/codex-meter/runtime /opt/codex-meter/releases
 release=$(mktemp -d /opt/codex-meter/releases/release-XXXXXXXX)
-cp -a "$repo/collector.py" "$repo/server.mjs" "$repo/pricing.json" "$repo/public" "$repo/scripts" "$release/"
+cp -a "$repo/collector.py" "$repo/server.mjs" "$repo/pricing.py" "$repo/pricing.json" "$repo/public" "$repo/scripts" "$release/"
 find "$release" -type d -exec chmod 0755 {} +
 find "$release" -type f -exec chmod 0644 {} +
 chown -R root:root "$release"

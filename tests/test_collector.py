@@ -1,6 +1,8 @@
+from datetime import datetime
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -74,6 +76,31 @@ class Tests(unittest.TestCase):
         rows=prefix();rows[2]['payload']['model']=SECRET;self.write(rows+[request()])
         r=self.scan();self.assertEqual(r['models'][0]['model'],'unknown');self.assertEqual(r['totals']['unpricedRequests'],1)
         self.assertNotIn(SECRET,self.output.read_text())
+    def test_catalog_command_backfills_retained_requests_without_duplicates(self):
+        catalog = self.root/'pricing.json'
+        catalog.write_bytes((BASE/'pricing.json').read_bytes())
+        self.c.pricing = catalog
+        model = 'fixture-new-model'
+        rows = prefix()
+        rows[2]['payload']['model'] = model
+        self.write(rows+[request()])
+        self.assertEqual(self.scan()['models'][0]['model'], 'unknown')
+
+        edit = [sys.executable, str(BASE/'pricing.py'), '--file', str(catalog), model]
+        subprocess.run(edit+['3', '.5', '9'], check=True, capture_output=True)
+        report = self.scan()
+        self.assertEqual(report['usageEvents'][0]['model'], model)
+        self.assertEqual(report['totals']['requests'], 1)
+        self.assertAlmostEqual(report['totals']['costUSD'], .0029)
+        self.assertEqual(self.scan()['totals'], report['totals'])
+
+        saved = catalog.read_bytes()
+        self.assertNotEqual(subprocess.run(edit+['NaN', '.5', '9'], capture_output=True).returncode, 0)
+        self.assertEqual(catalog.read_bytes(), saved)
+        subprocess.run(edit+['4', '.5', '9'], check=True, capture_output=True)
+        with self.file.open('a') as file:
+            file.write(json.dumps(request('r2'))+'\n')
+        self.assertAlmostEqual(self.scan()['totals']['costUSD'], .0064)
     def test_counter_reset_is_conservative(self):
         self.write(prefix()+[legacy(),legacy(usage(10,0,1,r=0),at='2026-10-20T01:00:03Z')])
         r=self.scan();self.assertEqual(r['totals']['requests'],1);self.assertEqual(r['coverage']['counterResets'],1)
@@ -89,6 +116,11 @@ class Tests(unittest.TestCase):
         self.assertIsNone(counters({'input_tokens':True}))
         self.assertIsNone(price(usage(),'codex-auto-review','standard',rates))
         self.assertIsNone(price(usage(),'gpt-6.1-sol','unknown',rates))
+        cutoff = datetime.fromisoformat('2027-03-01T08:00:00+00:00').timestamp()
+        self.assertAlmostEqual(price(usage(),'gpt-6.2-sol','ultrafast',rates,at=cutoff-1), .00672)
+        self.assertAlmostEqual(price(usage(),'gpt-6.2-sol','ultrafast',rates,at=cutoff), .01344)
+        self.assertAlmostEqual(price(usage(300000,200000,1000,w=10000,r=500),'gpt-6.2-sol','fast',rates),.93)
+        self.assertIsNone(price(usage(),'gpt-6.2-sol','flex',rates))
     def test_invalid_json_and_oversized_lines_do_not_block_future_events(self):
         self.write(prefix())
         with self.file.open('ab')as f:f.write(b'bad json\n'+b'x'*(4*1024*1024+50)+b'\n'+json.dumps(request()).encode()+b'\n')

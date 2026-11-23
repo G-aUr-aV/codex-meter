@@ -7,14 +7,16 @@ import {request as httpRequest} from 'node:http';
 import {gunzipSync} from 'node:zlib';
 import {createApp,hashPassphrase,sanitizeReport} from '../server.mjs';
 const pass='a test passphrase for fixtures only';
-async function fixture(t,{mustChange=false}={}){
+async function fixture(t,{mustChange=false,catalog}={}){
  const dir=await mkdtemp(path.join(tmpdir(),'meter-test-'));
  await writeFile(dir+'/auth.json',JSON.stringify(await hashPassphrase(pass,mustChange)),{mode:0o600});
  const report={version:1,generatedAt:Date.now()/1000,totals:{input_tokens:1000,total_tokens:1100},daily:[],turns:[],sessions:[],models:[],coverage:{},pricing:{models:{}}};
  await writeFile(dir+'/report.json',JSON.stringify(report));
  // Port 0 for an isolated local fixture; Origin remains explicit.
  const origin='http://127.0.0.1:4318';
- const app=await createApp({stateDir:dir,reportFile:dir+'/report.json',origins:[origin],insecureLocal:true});
+ const pricingFile=catalog ? dir+'/pricing.json' : undefined;
+ if(catalog)await writeFile(pricingFile,JSON.stringify(catalog));
+ const app=await createApp({stateDir:dir,reportFile:dir+'/report.json',pricingFile,origins:[origin],insecureLocal:true});
  await new Promise(r=>app.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+app.address().port;
  t.after(async()=>{await new Promise(r=>app.close(r));await rm(dir,{recursive:true,force:true});});
  const request=(pathname,options={})=>new Promise((resolve,reject)=>{
@@ -79,6 +81,31 @@ test('report boundary discards extra data, arbitrary model strings, and nonfinit
  const sentinel='<script>private source text</script>';
  const r=sanitizeReport({version:1,totals:{total_tokens:Infinity},daily:[],content:sentinel,turns:[{model:sentinel,prompt:sentinel,session:sentinel}],pricing:{models:{[sentinel]:{}}}});
  assert.ok(!JSON.stringify(r).includes(sentinel));assert.equal(r.totals.total_tokens,0);assert.equal(r.turns[0].model,'unknown');
+});
+test('configured model IDs reach the authenticated report without trusting snapshot model names',async t=>{
+ const name='fixture-new-model', hidden='unconfigured-model-looking-value';
+ const rates={input:3,cached:.5,output:9};
+ const f=await fixture(t,{catalog:{models:{}}});
+ f.report.models=[{model:name},{model:hidden}];
+ f.report.daily=[{date:'2026-11-23',models:f.report.models}];
+ f.report.usageEvents=f.report.models;
+ f.report.turns=f.report.models;
+ f.report.pricing.models={[name]:rates,[hidden]:rates};
+ await writeFile(f.dir+'/report.json',JSON.stringify(f.report));
+ const {cookie}=await f.login();
+ const fetchReport=()=>f.request('/api/report',{headers:{Cookie:cookie}});
+ assert.deepEqual((await (await fetchReport()).json()).pricing.models,{});
+ await writeFile(f.dir+'/pricing.json',JSON.stringify({models:{[name]:rates}}));
+ const realNow=Date.now;
+ Date.now=()=>realNow()+6000;
+ let result;
+ try{result=await fetchReport();}finally{Date.now=realNow;}
+ assert.equal(result.status,200);
+ const report=await result.json();
+ for(const models of [report.models,report.daily[0].models,report.turns,report.usageEvents]){
+   assert.deepEqual(models.map(m=>m.model),[name,'unknown']);
+ }
+ assert.deepEqual(report.pricing.models,{[name]:rates});
 });
 test('concurrent authentication stays within the hash concurrency cap',async t=>{
  const f=await fixture(t);

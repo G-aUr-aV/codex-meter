@@ -10,22 +10,27 @@ const scrypt = promisify(scryptCallback);
 const gzip = promisify(gzipCallback);
 const METRICS = ['input_tokens','cached_input_tokens','cache_write_input_tokens','output_tokens',
   'reasoning_output_tokens','total_tokens','requests','pricedRequests','unpricedRequests','costUSD','legacyRequests'];
-const SAFE_MODELS = new Set(['gpt-6.1-sol','gpt-6-sol','gpt-6-astra','gpt-6-luna','gpt-5.6-sol','gpt-5.6-luna','codex-auto-review','mixed','unknown']);
+const INTERNAL_MODELS = ['codex-auto-review','mixed','unknown'];
+const MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,79}$/;
+const MAX_CONFIGURED_MODELS = 256;
 const SAFE_TIERS = new Set(['standard','fast','flex','batch','ultrafast','unknown']);
 const SAFE_EFFORT = new Set(['low','medium','high','xhigh','max','ultra','minimal','none','unknown']);
 const number = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1e15 ? n : 0;
 const metrics = value => Object.fromEntries(METRICS.map(k => [k, number(value?.[k])]));
 const id = s => typeof s === 'string' && /^[a-f0-9]{24}$/.test(s) ? s : '000000000000000000000000';
-const model = s => SAFE_MODELS.has(s) ? s : 'unknown';
 const role = s => ['Codex','Review','Agent'].includes(s) ? s : 'Codex';
 const bounded = (a, limit) => Array.isArray(a) ? a.slice(0, limit) : [];
-export function sanitizeReport(r) {
+export function sanitizeReport(r, configuredModels = []) {
   if (r?.version !== 1 || !r.totals || !Array.isArray(r.daily)) throw new Error('invalid_snapshot');
+  const catalog = new Set(configuredModels.filter(name => MODEL_ID.test(name) && !INTERNAL_MODELS.includes(name)));
+  const safeModels = new Set([...INTERNAL_MODELS, ...catalog]);
+  const modelLimit = Math.max(20,safeModels.size);
+  const model = s => safeModels.has(s) ? s : 'unknown';
   return {
     version: 1, generatedAt: number(r.generatedAt), timezone: 'Asia/Kolkata', totals: metrics(r.totals),
     daily: bounded(r.daily,365).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d.date)).map(d => ({date:d.date,...metrics(d),
-      models:bounded(d.models,20).map(m => ({model:model(m.model),...metrics(m)}))})),
-    models:bounded(r.models,20).map(m => ({model:model(m.model),...metrics(m)})),
+      models:bounded(d.models,modelLimit).map(m => ({model:model(m.model),...metrics(m)}))})),
+    models:bounded(r.models,modelLimit).map(m => ({model:model(m.model),...metrics(m)})),
     sessions:bounded(r.sessions,2000).map(s => ({id:id(s.id),firstAt:number(s.firstAt),lastAt:number(s.lastAt),role:role(s.role),...metrics(s)})),
     turns:bounded(r.turns,2500).map(t => ({id:id(t.id),session:id(t.session),at:number(t.at),model:model(t.model),
       role:role(t.role),tier:SAFE_TIERS.has(t.tier)?t.tier:'unknown',effort:SAFE_EFFORT.has(t.effort)?t.effort:'unknown',
@@ -36,7 +41,7 @@ export function sanitizeReport(r) {
     coverage:Object.fromEntries(['sourceFiles','lagBytes','lastEventAt','scanMs','allSessions','allTurns','omittedTurns','daysLimit',
       'malformedLines','oversizedLines','counterResets','unsupportedFiles','eventDetailsVersion','eventLimit','omittedEvents','eventsFrom'].map(k=>[k,number(r.coverage?.[k])])),
     pricing:{verified:'2026-10-20',currency:'USD',basis:'API-equivalent token estimates',
-      models:Object.fromEntries(Object.entries(r.pricing?.models||{}).filter(([k])=>SAFE_MODELS.has(k)).map(([k,v])=>[k,
+      models:Object.fromEntries(Object.entries(r.pricing?.models||{}).filter(([k,v])=>catalog.has(k)&&v).map(([k,v])=>[k,
         Object.fromEntries(['input','cached','write','output','long_threshold','long_input','long_output','long_cached'].filter(f=>v[f]!==undefined).map(f=>[f,number(v[f])]))]))}
   };
 }
@@ -57,6 +62,7 @@ const validPassphrase = p => typeof p==='string' && [...p].length>=14 && [...p].
 
 export async function createApp(config) {
   const publicRoot=config.publicRoot||fileURLToPath(new URL('./public/',import.meta.url));
+  const pricingFile=config.pricingFile||new URL('./pricing.json',import.meta.url);
   const authFile=path.join(config.stateDir,'auth.json');
   const authStat=await lstat(authFile);
   if (!authStat.isFile() || authStat.isSymbolicLink() || (authStat.mode & 0o077)) throw new Error('unsafe_auth_file');
@@ -83,7 +89,12 @@ export async function createApp(config) {
     snapshotLoad=(async()=>{
       const st=await lstat(config.reportFile);
       if(!st.isFile()||st.isSymbolicLink()||st.size>16*1024*1024)throw new Error('invalid_snapshot');
-      const report=sanitizeReport(JSON.parse(await readFile(config.reportFile,'utf8')));
+      // Only the operator catalog can expand the snapshot's model allowlist.
+      const {models}=JSON.parse(await readFile(pricingFile,'utf8'));
+      if(!models||typeof models!=='object'||Array.isArray(models))throw new Error('invalid_pricing');
+      const configuredModels=Object.keys(models);
+      if(configuredModels.length>MAX_CONFIGURED_MODELS)throw new Error('invalid_pricing');
+      const report=sanitizeReport(JSON.parse(await readFile(config.reportFile,'utf8')),configuredModels);
       const plain=Buffer.from(JSON.stringify(report)),compressed=await gzip(plain);
       cached={plain,compressed};cachedAt=Date.now();return cached;
     })();

@@ -13,14 +13,18 @@ import stat
 import time
 from zoneinfo import ZoneInfo
 
+from pricing import load_catalog
+
 FIELDS = ('input_tokens', 'cached_input_tokens', 'cache_write_input_tokens',
           'output_tokens', 'reasoning_output_tokens', 'total_tokens')
+SAME_EVENT_TOKENS = ' AND '.join(f'events.{key}=excluded.{key}' for key in FIELDS)
 MAX_LINE = 4 * 1024 * 1024
 MAX_SCAN = 16 * 1024 * 1024
 MAX_USAGE_EVENTS = 10000
 TIERS = {'default': 'standard', 'standard': 'standard', 'priority': 'fast',
          'fast': 'fast', 'flex': 'flex', 'batch': 'batch', 'ultrafast': 'ultrafast'}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'minimal', 'none'}
+DEFAULT_RATE_TIERS = {'standard': 1, 'fast': 2, 'flex': .5, 'batch': .5}
 
 
 def counters(value):
@@ -50,22 +54,27 @@ def timestamp(value):
         return None
 
 
-def price(tokens, model, tier, rates, legacy=False):
+def price(tokens, model, tier, rates, legacy=False, at=None):
     row = rates['models'].get(model)
     # Unknown routing aliases and legacy batches must never acquire invented prices.
-    if not row or tier not in {'standard', 'fast', 'flex', 'batch', 'ultrafast'} or legacy:
+    if not row or legacy:
         return None
-    if tier == 'ultrafast' and model != 'gpt-6.1-sol':
+    multiplier = row.get('tiers', DEFAULT_RATE_TIERS).get(tier)
+    if multiplier is None or ('write' not in row and tokens['cache_write_input_tokens']):
         return None
-    multiplier = {'standard': 1, 'fast': 2, 'flex': .5, 'batch': .5, 'ultrafast': 6}[tier]
-    long = tokens['input_tokens'] > row['long_threshold']
+    if tier == 'ultrafast' and (promo := row.get('ultrafast_promo')):
+        if at is None:
+            return None
+        if at < dt.datetime.fromisoformat(promo['until'].replace('Z', '+00:00')).timestamp():
+            multiplier = promo['multiplier']
+    long = 'long_threshold' in row and tokens['input_tokens'] > row['long_threshold']
     im = row['long_input'] if long else 1
     cm = row.get('long_cached', im) if long else 1
     om = row['long_output'] if long else 1
     plain = tokens['input_tokens'] - tokens['cached_input_tokens'] - tokens['cache_write_input_tokens']
     return round(multiplier * (plain * row['input'] * im
                  + tokens['cached_input_tokens'] * row['cached'] * cm
-                 + tokens['cache_write_input_tokens'] * row['write'] * im
+                 + tokens['cache_write_input_tokens'] * row.get('write', 0) * im
                  + tokens['output_tokens'] * row['output'] * om) / 1_000_000, 10)
 
 
@@ -99,7 +108,8 @@ class Collector:
             with os.fdopen(fd, 'wb') as f:
                 f.write(secrets.token_bytes(32))
         self.key = secret.read_bytes()
-        self.rates = json.loads(Path(pricing).read_text())
+        self.pricing = Path(pricing)
+        self.rates = load_catalog(self.pricing)
         self.zone = ZoneInfo(timezone)
         self.db = sqlite3.connect(self.state_dir / 'ledger.sqlite')
         self.db.row_factory = sqlite3.Row
@@ -206,7 +216,8 @@ class Collector:
             if isinstance(p.get('turn_id'), str):
                 state['tid'] = self.ident(state['sid'] + ':' + p['turn_id'][:200])
             model = p.get('model')
-            state['model'] = model if model in self.rates['models'] or model == 'codex-auto-review' else 'unknown'
+            state['model'] = model if isinstance(model, str) and (
+                model in self.rates['models'] or model == 'codex-auto-review') else 'unknown'
             state['effort'] = p.get('effort') if p.get('effort') in EFFORTS else 'unknown'
             if state['model'] == 'codex-auto-review':
                 state['role'] = 'Review'
@@ -257,13 +268,20 @@ class Collector:
                                 (self.ident(state['sid'] + ':tool:' + str(call)[:300]), state['tid']))
 
     def insert(self, eid, state, ts, usage, kind, legacy=False):
-        cost = price(usage, state['model'], state['tier'], self.rates, legacy)
-        self.db.execute('INSERT OR IGNORE INTO events VALUES(' + ','.join('?' for _ in range(16)) + ')',
-                        (eid, state['sid'], state['tid'], ts, state['model'], state['tier'],
-                         state['effort'], state['role'], kind, *(usage[k] for k in FIELDS), cost))
+        cost = price(usage, state['model'], state['tier'], self.rates, legacy, at=ts)
+        # A replay can attribute a previously unknown event without duplicating it.
+        self.db.execute(f'''INSERT INTO events VALUES({','.join('?' for _ in range(16))})
+            ON CONFLICT(id) DO UPDATE SET model=excluded.model, cost=excluded.cost
+            WHERE events.model='unknown' AND excluded.model<>'unknown'
+              AND events.sid=excluded.sid AND events.tid=excluded.tid AND events.ts=excluded.ts
+              AND events.kind=excluded.kind AND events.tier=excluded.tier AND {SAME_EVENT_TOKENS}''',
+            (eid, state['sid'], state['tid'], ts, state['model'], state['tier'],
+             state['effort'], state['role'], kind, *(usage[k] for k in FIELDS), cost))
 
     def scan(self):
         start = time.monotonic()
+        self.rates = load_catalog(self.pricing)
+        model_catalog = hashlib.sha256(json.dumps(sorted(self.rates['models'])).encode()).hexdigest()
         self.unsupported_files = 0
         remaining = MAX_SCAN
         files = lag = 0
@@ -273,9 +291,13 @@ class Collector:
             previous = self.db.execute('SELECT cursor,state FROM files WHERE id=?', (key,)).fetchone()
             cursor = previous['cursor'] if previous else 0
             state = json.loads(previous['state']) if previous else self.initial(key)
-            if info.st_size < cursor:
+            # Unknown names were discarded at collection time. Revisit retained logs
+            # when the set of configured model IDs changes, using the normal scan budget.
+            truncated = info.st_size < cursor
+            if truncated or state.get('modelCatalog') != model_catalog:
                 cursor, state = 0, self.initial(key)
-                state['resets'] = 1
+                state['modelCatalog'] = model_catalog
+                state['resets'] = int(truncated)
             try:
                 with os.fdopen(fd, 'rb') as source:
                     source.seek(cursor)
